@@ -166,7 +166,7 @@ def end_game():
     # Reset the player stats to 0
     reset_player_stats()
 
-def on_connect(client, userdata, msg):
+def on_connect(client, userdata, flags, rc):
     print("Connected to MQTT Broker")
     client.subscribe(mqtt_topic);
     
