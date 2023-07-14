@@ -30,13 +30,73 @@ def update_frame(frame):
     video_label.imgTk = imgTk
     video_label.configure(image=imgTk)
 
+# def player_exists(player_name, team_name):
+#     items = table.get_children()
+#     for item in items:
+#         values = table.item(item)["values"]
+#         if values[0] == player_name
+def player_exists(player_name, team_name):
+    conn = sqlite3.connect('sd2.db')
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM Players WHERE player_name = ? AND team_id IN (SELECT team_id FROM Team WHERE team_name = ?)",(player_name, team_name))
+    count = c.fetchone()[0]
+    conn.close()
+    return count > 0
+# def player_exists(player_name, team_name):
+#     conn = sqlite3.connect('sd2.db')
+#     c = conn.cursor()
+#     #c.execute("SELECT COUNT(*)
+#     query = "SELECT * FROM Players WHERE team_id IN (SELECT team_id FROM Team WHERE team_name =?) AND player_name = ?"
+#     c.execute(query, (team_name, player_name))
+#     existing_player = cursor.fetchone()
+#     print(existing_player)
+#     if existing_player:
+#         return True
+#     return False
+
 def add_player():
     player = entry.get()
-    team = team_entry.get()
+    team = team_entry.get()    
+#     if player:
+#         if player_exists(player,team):
+#             select_player(player)
+#             return        
+#     table.insert("", "end", values=(player, 0, 0))
+    insert_player_into_database(player, team)
+    #select_player(player)
+
+def insert_player_into_database(player, team):
+    fgm = 0
+    fga = 0
+    conn = sqlite3.connect('sd2.db')
+    c = conn.cursor()
     
-    if player:
-        table.insert("", "end", values=(player, 0, 0))
-        insert_player_into_database(player, team)
+    if player_exists(player,team):
+        select_player(player)
+        return
+        
+    query = "INSERT INTO Players (player_name, team_id, fgm, fga) SELECT ?, team_id, 0, 0 FROM Team WHERE team_name = ?"
+    c.execute(query, (player, team))
+    table.insert("", "end", values=(player, 0, 0)) #adds them to the table
+    select_player(player)
+    conn.commit()
+    conn.close()
+    
+def select_player(player_name):
+    for child in table.get_children():
+        values = table.item(child, "values")
+        if values and values[0] == player_name:
+            table.selection_set(child)
+            table.focus(child)
+            table.see(child)
+#     items = table.get_children()
+#     for item in items:
+#         values = table.item(item)["values"]
+#         print(values[0])
+#         if values[0] == player_name:
+#             table.selection_set(item)
+#             table.focus(item)
+#             break
 
 def make_shot():
     selected_item = table.focus()
@@ -60,28 +120,26 @@ def miss_shot():
         update_player_in_database(table.item(selected_item)["values"][0], table.item(selected_item)["values"][1], fga_value + 1)
 
 def capture_image():
-    selected_item = table.focus()
-    if selected_item:
-        player = table.item(selected_item)["values"][0]
-        file_name = f"{player}.jpg"
-    else:
-        file_name = "image.jpg"
-
+    file_name = "image.jpg"
+    global reader
+    team = team_entry.get()
     in_rgb = q_rgb.tryGet()
     if in_rgb is not None:
         frame = in_rgb.getCvFrame()
         cv2.imwrite(file_name, frame)
         print(f"Image saved as {file_name}")
-
-def insert_player_into_database(player, team):
-    fgm = 0
-    fga = 0
-    conn = sqlite3.connect('sd2.db')
-    c = conn.cursor()
-    query = "INSERT INTO Players (player_name, team_id, fgm, fga) SELECT ?, team_id, 0, 0 FROM Team WHERE team_name = ?"
-    c.execute(query, (player, team))
-    conn.commit()
-    conn.close()
+        
+        #use that saved image and use ocr to read it and save its results
+        result = reader.readtext('image.jpg')
+        #only do something with results if its at least 1 character long ie for numbers
+        if len(result) > 0:
+            player = result[0][1]
+            insert_player_into_database(player, team)
+            load_team()
+            select_player(player)
+            #return player
+        
+        #return None
 
 def update_player_in_database(player, fgm, fga):
     conn = sqlite3.connect('sd2.db')
@@ -159,7 +217,6 @@ def stop_mqtt_connection():
     if mqtt_client:
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
-        print("Disconnected from MQTT Broker")
         mqtt_client = None
 
 def end_game():
@@ -276,8 +333,8 @@ with depthai.Device(pipeline) as device:
     screen_height = root.winfo_screenheight()
 
     # Adjust the window dimensions to be slightly smaller than full screen
-    window_width = int(screen_width * 0.70)
-    window_height = int(screen_height * 0.70)
+    window_width = int(screen_width * 0.95)
+    window_height = int(screen_height * 0.95)
 
     # Set the window dimensions
     root.geometry(f"{window_width}x{window_height}")
@@ -366,3 +423,7 @@ with depthai.Device(pipeline) as device:
     root.mainloop()
     
     cv2.destroyAllWindows()
+
+
+
+
