@@ -7,17 +7,20 @@ import blobconverter
 import numpy as np
 import sqlite3
 import paho.mqtt.client as mqtt
+import easyocr
 
-#open mqtt connection
+# Open MQTT connection
 mqtt_broker = "192.168.8.120"
 mqtt_port = 1883
-mqtt_topic = "Shot"
+mqtt_topic = "Shot Status"
+
+#Create reader for OCR
+reader = easyocr.Reader(['en'])
 
 def frameNorm(frame, bbox):
     normVals = np.full(len(bbox), frame.shape[0])
     normVals[::2] = frame.shape[1]
     return (np.clip(np.array(bbox), 0, 1) * normVals).astype(int)
-
 
 def update_frame(frame):
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -27,7 +30,6 @@ def update_frame(frame):
     video_label.imgTk = imgTk
     video_label.configure(image=imgTk)
 
-
 def add_player():
     player = entry.get()
     team = team_entry.get()
@@ -35,7 +37,6 @@ def add_player():
     if player:
         table.insert("", "end", values=(player, 0, 0))
         insert_player_into_database(player, team)
-
 
 def make_shot():
     selected_item = table.focus()
@@ -51,14 +52,12 @@ def make_shot():
         score_value = int(score_label["text"].split(":")[1].strip())
         score_label["text"] = f"Score: {score_value + 2}"
 
-
 def miss_shot():
     selected_item = table.focus()
     if selected_item:
         fga_value = int(table.item(selected_item)["values"][2])
         table.item(selected_item, values=(table.item(selected_item)["values"][0], table.item(selected_item)["values"][1], fga_value + 1))
         update_player_in_database(table.item(selected_item)["values"][0], table.item(selected_item)["values"][1], fga_value + 1)
-
 
 def capture_image():
     selected_item = table.focus()
@@ -74,7 +73,6 @@ def capture_image():
         cv2.imwrite(file_name, frame)
         print(f"Image saved as {file_name}")
 
-
 def insert_player_into_database(player, team):
     fgm = 0
     fga = 0
@@ -85,14 +83,12 @@ def insert_player_into_database(player, team):
     conn.commit()
     conn.close()
 
-
 def update_player_in_database(player, fgm, fga):
     conn = sqlite3.connect('sd2.db')
     c = conn.cursor()
     c.execute("UPDATE players SET fgm = ?, fga = ?, pts = ? WHERE player_name = ?", (fgm, fga, (fgm*2), player))
     conn.commit()
     conn.close()
-
 
 def load_team():
     team_name = team_entry.get()
@@ -101,7 +97,8 @@ def load_team():
         clear_table()
         for player in players:
             table.insert("", "end", values=(player[0], player[1], player[2]))
-
+    else:
+        clear_table()
 
 def get_players_from_team(team_name):
     conn = sqlite3.connect('sd2.db')
@@ -111,11 +108,9 @@ def get_players_from_team(team_name):
     conn.close()
     return players
 
-
 def clear_table():
     for item in table.get_children():
         table.delete(item)
-
 
 def process_frame():
     in_rgb = q_rgb.tryGet()
@@ -139,36 +134,59 @@ def process_frame():
 def reset_player_stats():
     team_name = team_entry.get()
 
-    # Get the team_id based on the team_name
     conn = sqlite3.connect('sd2.db')
     c = conn.cursor()
     c.execute("SELECT team_id FROM Team WHERE team_name = ?", (team_name,))
     team_id = c.fetchone()[0]
 
-    # Reset the player stats to 0 for the given team_id
     c.execute("UPDATE Players SET fgm = 0, fga = 0, pts = 0 WHERE team_id = ?", (team_id,))
     conn.commit()
     conn.close()
+
+def start_mqtt_connection():
+    global mqtt_client
+    mqtt_client = mqtt.Client()
+    mqtt_client.on_connect = on_connect
+    mqtt_client.on_message = on_message
+    mqtt_client.connect(mqtt_broker, mqtt_port, 60)
+    mqtt_client.loop_start()
+
+def start_game():
+    start_mqtt_connection()
+
+def stop_mqtt_connection():
+    global mqtt_client
+    if mqtt_client:
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
+        mqtt_client = None
 
 def end_game():
     team_name = team_entry.get()
     team_id = team_entry.get()
     players = get_players_from_team(team_id)
     with open('game_results.txt', 'w') as file:
-        # Get the current score
         score_value = int(score_label["text"].split(":")[1].strip())
         file.write(f"Score: {score_value}\n")
         file.write(f"Team: {team_name}\n")
         file.write("\nPlayer\tFGM\tFGA\n")
         for player in players:
             file.write(f"{player[0]}\t\t{player[1]}\t{player[2]}\n")
-
-    # Reset the player stats to 0
+    if(not team_entry.get()):
+        stop_mqtt_connection()
+        return
+    
     reset_player_stats()
+    clear_table()
+    team_entry.delete(0, tk.END)
+    add_team_entry.delete(0,tk.END)
+    entry.delete(0, tk.END)
+    stop_mqtt_connection()
+    
 
 def on_connect(client, userdata, flags, rc):
     print("Connected to MQTT Broker")
-    client.subscribe(mqtt_topic);
+    client.subscribe(mqtt_topic)
     
 def on_message(client, userdata, msg):
     if(msg.payload.decode() == "Make"):
@@ -178,15 +196,51 @@ def on_message(client, userdata, msg):
     if(msg.payload.decode() == "Miss"):
         print(msg.payload.decode())
         miss_shot()
+
+def add_team():
+    #team_name = team_entry.get()
+    team_name = add_team_entry.get()
+    if team_name:
+        insert_team_into_database(team_name)
+
+def insert_team_into_database(team_name):
+    conn = sqlite3.connect('sd2.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO Team (team_name) VALUES (?)", (team_name,))
+    conn.commit()
+    conn.close()
     
+def perform_ocr(image):
+    # Load the image
+    #image = cv2.imread(image_path)
+    image_np = np.array(image)
+
+    # Convert the image to grayscale
+    #gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Create an OCR reader
+    #reader = easyocr.Reader(['en'])
+
+    # Perform OCR on the grayscale image
+    results = reader.readtext(image)
+
+    # Print the OCR results
+    #print(results[0][1])
+    for result in results:
+        print(result[1])
+
+def capture_image_periodically(root):
+    capture_image()
+    root.after(10000, capture_image_periodically, root)
+
 #establish mqtt
-client = mqtt.Client()
-client.on_connect = on_connect
-client.on_message = on_message
+# client = mqtt.Client()
+# client.on_connect = on_connect
+# client.on_message = on_message
+# 
+# client.connect(mqtt_broker,mqtt_port,60)
 
-client.connect(mqtt_broker,mqtt_port,60)
-
-#Starting camera use/ pipeline
+# Starting camera use/pipeline
 pipeline = depthai.Pipeline()
 cam_rgb = pipeline.create(depthai.node.ColorCamera)
 cam_rgb.setPreviewSize(300, 300)
@@ -214,7 +268,18 @@ with depthai.Device(pipeline) as device:
 
     root = tk.Tk()
     root.title("Camera GUI")
+    #root.attributes("-fullscreen", True)  # Open in full-screen mode
+    
+        # Get screen resolution
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
 
+    # Adjust the window dimensions to be slightly smaller than full screen
+    window_width = int(screen_width * 0.95)
+    window_height = int(screen_height * 0.95)
+
+    # Set the window dimensions
+    root.geometry(f"{window_width}x{window_height}")
     # Create a label for video feed
     video_label = tk.Label(root)
     video_label.pack(side="left")
@@ -234,18 +299,19 @@ with depthai.Device(pipeline) as device:
     table.heading("fga", text="FGA")
     table.pack()
 
-    # Create a frame for the text box and buttons
-    add_frame = tk.Frame(root)
-    add_frame.pack(side="top", pady=10)
+    # Create the "Add Team" button
+    add_team_frame = tk.Frame(root)
+    add_team_frame.pack(side="top", pady=25)
 
-    # Create the text box
-    entry = tk.Entry(add_frame)
-    entry.pack(side="left")
+    add_team_label = tk.Label(add_team_frame, text="Team Name:")
+    add_team_label.pack(side="left")
 
-    # Create the "Add Player" button
-    add_button = tk.Button(add_frame, text="Add Player", command=add_player)
-    add_button.pack(side="left")
+    add_team_entry = tk.Entry(add_team_frame)
+    add_team_entry.pack(side="left")
 
+    add_team_button = tk.Button(add_team_frame, text="Add Team", command=add_team)
+    add_team_button.pack(side="left")
+    
     # Create the "Load Team" text box
     team_frame = tk.Frame(root)
     team_frame.pack(side="top", pady=10)
@@ -260,19 +326,45 @@ with depthai.Device(pipeline) as device:
     load_button = tk.Button(team_frame, text="Load Team", command=load_team)
     load_button.pack(side="left")
 
+    # Create a frame for the text box and buttons
+    add_frame = tk.Frame(root)
+    add_frame.pack(side="top", pady=10)
+
+    # Create the text box THIS is the text box for the 'Add Player' button
+    entry = tk.Entry(add_frame)
+    entry.pack(side="left")
+
+    # Create the "Add Player" button
+    add_button = tk.Button(add_frame, text="Add Player", command=add_player)
+    add_button.pack(side="left")
+
     # Create the "Make" button
     make_button = tk.Button(root, text="Make", command=make_shot)
-    make_button.pack(side="top")
+    #make_button.pack(side="top")
+    make_button.place(x=400, y=225)
 
     # Create the "Miss" button
     miss_button = tk.Button(root, text="Miss", command=miss_shot)
-    miss_button.pack(side="top")
+    #miss_button.pack(side="top")
+    miss_button.place(x=500, y=225)
+    
+    # Create the "Start Game" button
+    start_game_button = tk.Button(root, text="Start Game", command=start_game)
+    start_game_button.place(x=430, y=260)
 
     # Create the "End Game" button
     end_game_button = tk.Button(root, text="End Game", command=end_game)
-    end_game_button.pack(side="top")
+    #end_game_button.pack(side="top")
+    end_game_button.place(x=430, y=290)
 
-    client.loop_start()
+    # Schedule the initial image capture
+    root.after(10000, capture_image_periodically, root)
+
+    #client.loop_start()
     process_frame()
     root.mainloop()
+    
     cv2.destroyAllWindows()
+
+
+
