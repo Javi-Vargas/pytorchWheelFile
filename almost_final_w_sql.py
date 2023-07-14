@@ -15,7 +15,7 @@ mqtt_port = 1883
 mqtt_topic = "Shot Status"
 
 #Create reader for OCR
-reader = easyocr.Reader(['en'])
+#reader = easyocr.Reader(['en'])
 
 def frameNorm(frame, bbox):
     normVals = np.full(len(bbox), frame.shape[0])
